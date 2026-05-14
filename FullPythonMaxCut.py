@@ -48,15 +48,35 @@ def kron_two(op_i, qi, op_j, qj, n_qubits):
 
 # ── Cost Hamiltonian H_C = sum_{(i,j)} (I - Z_i Z_j) / 2 ─────────────────
 H_C = np.zeros((DIM, DIM), dtype=complex)
+Q = np.zeros((N_QUBITS, N_QUBITS))
+H = np.zeros((N_QUBITS, N_QUBITS))
+
 for i, j in edges:
     ZZ   = kron_two(Zp, i, Zp, j, N_QUBITS)
     H_C += (np.eye(DIM, dtype=complex) - ZZ) / 2
+    Q[i, i] += 1  
+    Q[j, j] += 1
+    Q[i, j] -= 2 
+    H[i, j] -= 0.5
 
 cost_diag = np.diag(H_C).real      # H_C is diagonal
 
+print("QUBO Matrix Q:")
+print(Q)
+print(H)
+
+print("Eigenvalues of H:")
+eigenvals = np.linalg.eigvals(H)
+for val in eigenvals:
+    print(f"  {val:.4f}")
+
+print("Cost Hamiltonian diagonal (cost for each bitstring):")
+for i, val in enumerate(cost_diag):
+    print(f"  Bitstring {i:0{N_QUBITS}b}: {val:.4f}")
+
 def apply_cost_unitary(state: np.ndarray, gamma: float) -> np.ndarray:
     return np.exp(-1j * gamma * cost_diag) * state  # O(n) elementwise
-
+aa
 # ------------------------------------------------------------------------------
 # Apply the mixer unitary (Rx rotations) to the state
 # ------------------------------------------------------------------------------

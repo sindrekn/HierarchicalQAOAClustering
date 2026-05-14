@@ -1,7 +1,6 @@
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.optimize import minimize
-from scipy.linalg import expm
 import networkx as nx
 from numba import njit
 

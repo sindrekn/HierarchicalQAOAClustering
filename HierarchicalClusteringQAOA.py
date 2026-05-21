@@ -13,9 +13,9 @@ def add_edges(graph: nx.Graph, edges: list):
 
 network_graph = nx.Graph()
 # edges = [(0, 1), (0, 2), (0, 6), (1, 2), (1, 6), (2, 3), (3, 4), (3, 5), (4, 5)]
-# edges = [(0, 1), (0, 2), (0, 3), (1, 3), (2, 3), (2, 4), (3, 8), (4, 5), (4, 6), (5, 6), (6, 7), (6, 9), (7, 8), (7, 9), (8, 9)]
-G = nx.petersen_graph()          # 10 nodes, well-known structured graph
-add_edges(network_graph, G.edges())
+edges = [(0, 1), (0, 2), (0, 3), (1, 3), (2, 3), (2, 4), (3, 8), (4, 5), (4, 6), (5, 6), (6, 7), (6, 9), (7, 8), (7, 9), (8, 9)]
+# G = nx.petersen_graph()          # 10 nodes, well-known structured graph
+add_edges(network_graph, edges)
 print(f"Graph has {network_graph.number_of_nodes()} nodes and {network_graph.number_of_edges()} edges.")
 
 nodelist = sorted(network_graph.nodes())
@@ -210,7 +210,6 @@ def qaoa_k2_cluster(
     alpha: float,
     p: int,
     n_restarts: int,
-    primitive_result: bool = True,
 ) -> dict:
     """
     Optimize QAOA variational parameters for 2-cluster modularity maximization.
@@ -226,7 +225,6 @@ def qaoa_k2_cluster(
 
     best_val = np.inf
     best_res = None
-    advanced_results = {'gammas': [], 'betas': [], 'energies': []}
 
     for _ in range(n_restarts):
         # Random initialization of gamma in [0, pi] and beta in [0, pi/2]
@@ -245,11 +243,6 @@ def qaoa_k2_cluster(
             best_val = res.fun
             best_res = res
 
-        if not primitive_result:
-            advanced_results['gammas'].append(res.x[:p])
-            advanced_results['betas'].append(res.x[p:])
-            advanced_results['energies'].append(-res.fun)
-
     # Re-run with best found parameters to get the final state
     k2_cluster.qaoa_run(p, best_res.x)
     probs_opt = np.abs(k2_cluster.state) ** 2
@@ -259,8 +252,105 @@ def qaoa_k2_cluster(
         'probs':           probs_opt,
         'best_partition':  k2_cluster.get_most_probable_bitstring(),
     }
-    if not primitive_result:
-        results['advanced'] = advanced_results
+    return results
+
+def qaoa_test_gamma_beta(
+    A: np.ndarray,
+    alpha: float,
+    n_restarts: int,
+) -> dict:
+    """
+    Test function to evaluate the distribution of optimized gamma and beta
+    parameters across multiple random restarts of the 2-cluster QAOA optimization.
+    Logs every function evaluation made by the optimizer, not just the final result.
+    """
+    k2_cluster = QAOAClustering(A, alpha=alpha)
+    results = {
+        'gammas':           [],  
+        'betas':            [],  
+        'state_probs':      [],  
+        'expected_values':  [],   
+    }
+
+    for _ in range(n_restarts):
+        # Log every step the optimizer takes
+        trajectory = {
+            'gammas':          [],
+            'betas':           [],
+            'expected_values': [],
+            'state_probs':     [],
+        }
+
+        def objective(params):
+            ev = k2_cluster.expectation_value(1, params)
+            # Log current evaluation
+            trajectory['gammas'].append(params[0])
+            trajectory['betas'].append(params[1])
+            trajectory['expected_values'].append(ev)
+            trajectory['state_probs'].append(np.abs(k2_cluster.state) ** 2)
+            return -ev
+
+        g0 = np.random.uniform(0, np.pi)
+        b0 = np.random.uniform(0, np.pi / 2)
+        x0 = np.array([g0, b0])
+
+        res = minimize(
+            objective,
+            x0,
+            method='COBYLA',
+            options={'maxiter': 200, 'rhobeg': 0.5},
+        )
+
+        results['gammas'].append(np.array(trajectory['gammas']))
+        results['betas'].append(np.array(trajectory['betas']))
+        results['state_probs'].append(np.array(trajectory['state_probs']))
+        results['expected_values'].append(np.array(trajectory['expected_values']))
+
+    return results
+
+def qaoa_test_p(
+    A: np.ndarray,
+    alpha: float,
+    n_restarts: int,
+) -> dict:
+    """
+    Test function to evaluate the effect of varying the QAOA circuit depth p on the 
+    optimized parameters and resulting state probabilities for the 2-cluster 
+    modularity maximization problem.
+    """
+    k2_cluster = QAOAClustering(A, alpha=alpha)
+
+    results = {'p': [],'gamma_opt': [], 'beta_opt': [], 'state probabilities': [], 'expected values': []}
+    best_val = np.inf
+    best_res = None
+
+    for p in range(1, 6):  # Test p from 1 to 5
+        for _ in range(n_restarts):
+            # Random initialization of gamma in [0, pi] and beta in [0, pi/2]
+            g0 = np.random.uniform(0, np.pi,     p)
+            b0 = np.random.uniform(0, np.pi / 2, p)
+            x0 = np.concatenate([g0, b0])
+
+            res = minimize(
+                lambda params: -k2_cluster.expectation_value(p, params),
+                x0,
+                method='COBYLA',
+                options={'maxiter': 200, 'rhobeg': 0.5},
+            )
+
+            if res.fun < best_val:
+                best_val = res.fun
+                best_res = res
+
+        # Re-run with best found parameters to get the final state
+        k2_cluster.qaoa_run(p, best_res.x)
+        probs_opt = np.abs(k2_cluster.state) ** 2
+
+        results['p'].append(p)
+        results['gamma_opt'].append(best_res.x[:p])
+        results['beta_opt'].append(best_res.x[p:])
+        results['state probabilities'].append(probs_opt)
+        results['expected values'].append(-best_val)
 
     return results
 
@@ -274,7 +364,7 @@ def k_cluster_qaoa(
     n_restarts: int = 3,
     alpha_scale: float = 1.5,
     min_cluster_size: int = 2,
-    max_depth: int = 4,
+    max_depth: int = 7,
 ) -> dict:
     """
     Hierarchical bisection clustering using QAOA.
@@ -420,40 +510,45 @@ def k_cluster_qaoa(
         "tree":             state["tree"],
     }
 
-res = k_cluster_qaoa(A)
+# res = k_cluster_qaoa(A)
 
-# Plot the resulting partition
-G = nx.from_numpy_array(A)
-labels = res["best_labels"]
-unique_labels = np.unique(labels)
-color_map = plt.get_cmap('tab10')
-colors = [color_map(label) for label in labels]
-plt.figure(figsize=(8, 6))
-nx.draw_networkx(G, with_labels=True, node_color=colors, node_size=500)
-plt.title(f"Hierarchical QAOA Clustering (Q={res['best_modularity']:.4f}, k={res['n_clusters']})")
-plt.axis('off')
+# # Plot the resulting partition
+# G = nx.from_numpy_array(A)
+# labels = res["best_labels"]
+# unique_labels = np.unique(labels)
+# color_map = plt.get_cmap('tab10')
+# colors = [color_map(label) for label in labels]
+# plt.figure(figsize=(8, 6))
+# nx.draw_networkx(G, with_labels=True, node_color=colors, node_size=500)
+# plt.title(f"Hierarchical QAOA Clustering (Q={res['best_modularity']:.4f}, k={res['n_clusters']})")
+# plt.axis('off')
 
-# Find the optimal k-cluster partition using brute-force search for comparison
-from itertools import product
-def brute_force_k_cluster(A: np.ndarray, k: int) -> dict:
-    n = len(A)
-    best_modularity = -np.inf
-    best_partition = None
+# # Find the optimal k-cluster partition using brute-force search for comparison
+# from itertools import product
+# def brute_force_k_cluster(A: np.ndarray, k: int) -> dict:
+#     n = len(A)
+#     best_modularity = -np.inf
+#     best_partition = None
 
-    for partition in product(range(k), repeat=n):
-        modularity = modularity_calc(A, alpha=1.0, x=np.array(partition))
-        if modularity > best_modularity:
-            best_modularity = modularity
-            best_partition = partition
+#     for partition in product(range(k), repeat=n):
+#         modularity = modularity_calc(A, alpha=1.0, x=np.array(partition))
+#         if modularity > best_modularity:
+#             best_modularity = modularity
+#             best_partition = partition
 
-    return {
-        "best_partition": best_partition,
-        "best_modularity": best_modularity,
-    }
+#     return {
+#         "best_partition": best_partition,
+#         "best_modularity": best_modularity,
+#     }
 
-for k in range(2, res["n_clusters"] + 1):
-    bf_result = brute_force_k_cluster(A, k)
-    print(f"Brute-force k={k} | Q={bf_result['best_modularity']:.4f} | Partition={bf_result['best_partition']}")
+# for k in range(2, res["n_clusters"] + 1):
+#     bf_result = brute_force_k_cluster(A, k)
+#     print(f"Brute-force k={k} | Q={bf_result['best_modularity']:.4f} | Partition={bf_result['best_partition']}")
 
-plt.show()
+# plt.show()
 
+gamm_beta_result = qaoa_test_gamma_beta(A, alpha=1.0, n_restarts=5)
+p_result = qaoa_test_p(A, alpha=1.0, n_restarts=5)
+
+print("Gamma and Beta Optimization Results shape:", gamm_beta_result['gammas'])
+print("P Optimization Results shape:", p_result['gamma_opt'])

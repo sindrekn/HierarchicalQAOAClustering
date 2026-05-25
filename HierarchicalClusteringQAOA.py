@@ -1,32 +1,36 @@
 import numpy as np
+import pandas as pd
 import networkx as nx
-import matplotlib.pyplot as plt
 from scipy.optimize import minimize
+import h5py
+import json
+from itertools import product
+import argparse
 
 # =============================================================================
 # Graph Construction
 # =============================================================================
-
-def add_edges(graph: nx.Graph, edges: list):
-    for edge in edges:
-        graph.add_edge(edge[0], edge[1])
+def add_edges(graph: nx.Graph, edges: list, weights: list):
+    for edge, weight in zip(edges, weights):
+        graph.add_edge(edge[0], edge[1], weight=weight)
 
 network_graph = nx.Graph()
-# edges = [(0, 1), (0, 2), (0, 6), (1, 2), (1, 6), (2, 3), (3, 4), (3, 5), (4, 5)]
-edges = [(0, 1), (0, 2), (0, 3), (1, 3), (2, 3), (2, 4), (3, 8), (4, 5), (4, 6), (5, 6), (6, 7), (6, 9), (7, 8), (7, 9), (8, 9)]
-# G = nx.petersen_graph()          # 10 nodes, well-known structured graph
-add_edges(network_graph, edges)
+graph = pd.read_csv("result/graph.csv")
+edges   = [(row['Node1'], row['Node2']) for _, row in graph.iterrows()]
+weights = [row['Weight'] for _, row in graph.iterrows()]
+
+add_edges(network_graph, edges, weights)
+
 print(f"Graph has {network_graph.number_of_nodes()} nodes and {network_graph.number_of_edges()} edges.")
 
 nodelist = sorted(network_graph.nodes())
-A = np.array(nx.adjacency_matrix(network_graph, nodelist=nodelist).todense())
+A = np.array(nx.adjacency_matrix(network_graph, nodelist=nodelist, weight='weight').todense())
 N_QUBITS = len(network_graph.nodes)
 DIM = 2 ** N_QUBITS
 
 # =============================================================================
 # Pauli Matrices
-# =============================================================================
-
+# ============================================================================= 
 I2 = np.eye(2, dtype=complex)
 Zp = np.array([[1, 0], [0, -1]], dtype=complex)
 
@@ -298,7 +302,7 @@ def qaoa_test_gamma_beta(
             objective,
             x0,
             method='COBYLA',
-            options={'maxiter': 200, 'rhobeg': 0.5},
+            options={'maxiter': 5, 'rhobeg': 0.5},
         )
 
         results['gammas'].append(np.array(trajectory['gammas']))
@@ -321,10 +325,10 @@ def qaoa_test_p(
     k2_cluster = QAOAClustering(A, alpha=alpha)
 
     results = {'p': [],'gamma_opt': [], 'beta_opt': [], 'state probabilities': [], 'expected values': []}
-    best_val = np.inf
-    best_res = None
 
-    for p in range(1, 6):  # Test p from 1 to 5
+    for p in range(1, 7):  # Test p from 1 to 6
+        best_val = np.inf
+        best_res = None
         for _ in range(n_restarts):
             # Random initialization of gamma in [0, pi] and beta in [0, pi/2]
             g0 = np.random.uniform(0, np.pi,     p)
@@ -364,7 +368,7 @@ def k_cluster_qaoa(
     n_restarts: int = 3,
     alpha_scale: float = 1.5,
     min_cluster_size: int = 2,
-    max_depth: int = 7,
+    max_level: int = 7,
 ) -> dict:
     """
     Hierarchical bisection clustering using QAOA.
@@ -372,7 +376,7 @@ def k_cluster_qaoa(
     Repeatedly applies 2-cluster QAOA to subgraphs, building a binary
     bisection tree. A split is accepted only if it strictly improves the
     global modularity of the original graph. alpha is scaled up at each
-    depth to incentivise partitioning of increasingly cohesive subgraphs.
+    level to incentivise partitioning of increasingly cohesive subgraphs.
 
     Parameters
     ----------
@@ -381,7 +385,7 @@ def k_cluster_qaoa(
     n_restarts       : Random restarts per QAOA optimization.
     alpha_scale      : Multiplicative alpha increase per recursion depth.
     min_cluster_size : Do not attempt to split clusters smaller than this.
-    max_depth        : Maximum bisection depth.
+    max_level        : Maximum bisection level.
     """
     n = len(A)
 
@@ -420,8 +424,8 @@ def k_cluster_qaoa(
         }
         state["tree"][node_key] = tree_node
 
-        # Base cases: subgraph too small or maximum depth reached
-        if sub_n < min_cluster_size or depth >= max_depth:
+        # Base cases: subgraph too small or maximum level reached
+        if sub_n < min_cluster_size or depth >= max_level:
             return
 
         # Run 2-cluster QAOA on this subgraph
@@ -510,45 +514,181 @@ def k_cluster_qaoa(
         "tree":             state["tree"],
     }
 
-# res = k_cluster_qaoa(A)
+# =============================================================================
+# Storage
+# =============================================================================
 
-# # Plot the resulting partition
-# G = nx.from_numpy_array(A)
-# labels = res["best_labels"]
-# unique_labels = np.unique(labels)
-# color_map = plt.get_cmap('tab10')
-# colors = [color_map(label) for label in labels]
-# plt.figure(figsize=(8, 6))
-# nx.draw_networkx(G, with_labels=True, node_color=colors, node_size=500)
-# plt.title(f"Hierarchical QAOA Clustering (Q={res['best_modularity']:.4f}, k={res['n_clusters']})")
-# plt.axis('off')
+def save_test_results(filename: str, gamm_beta_result: dict, p_result: dict):
+    with h5py.File(filename, 'w') as f:
 
-# # Find the optimal k-cluster partition using brute-force search for comparison
-# from itertools import product
-# def brute_force_k_cluster(A: np.ndarray, k: int) -> dict:
-#     n = len(A)
-#     best_modularity = -np.inf
-#     best_partition = None
+        # --- qaoa_test_gamma_beta results ---
+        gb = f.create_group('gamma_beta')
+        for i in range(len(gamm_beta_result['gammas'])):
+            restart = gb.create_group(f'restart_{i}')
+            restart.create_dataset('gammas',          data=gamm_beta_result['gammas'][i])
+            restart.create_dataset('betas',           data=gamm_beta_result['betas'][i])
+            restart.create_dataset('expected_values', data=gamm_beta_result['expected_values'][i])
+            restart.create_dataset('state_probs',     data=gamm_beta_result['state_probs'][i])
 
-#     for partition in product(range(k), repeat=n):
-#         modularity = modularity_calc(A, alpha=1.0, x=np.array(partition))
-#         if modularity > best_modularity:
-#             best_modularity = modularity
-#             best_partition = partition
+        # --- qaoa_test_p results ---
+        pr = f.create_group('p_sweep')
+        pr.create_dataset('p',               data=np.array(p_result['p']))
+        pr.create_dataset('expected_values', data=np.array(p_result['expected values']))
+        for i, p in enumerate(p_result['p']):
+            layer = pr.create_group(f'p_{p}')
+            layer.create_dataset('gamma_opt',        data=p_result['gamma_opt'][i])
+            layer.create_dataset('beta_opt',         data=p_result['beta_opt'][i])
+            layer.create_dataset('state_probs',      data=p_result['state probabilities'][i])
 
-#     return {
-#         "best_partition": best_partition,
-#         "best_modularity": best_modularity,
-#     }
+class NumpyEncoder(json.JSONEncoder):
+    """Convert numpy types to native Python types for JSON serialization."""
+    def default(self, obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating,)):
+            return float(obj)
+        return super().default(obj)
 
-# for k in range(2, res["n_clusters"] + 1):
-#     bf_result = brute_force_k_cluster(A, k)
-#     print(f"Brute-force k={k} | Q={bf_result['best_modularity']:.4f} | Partition={bf_result['best_partition']}")
+def save_hierarchical_result(filename: str, result: dict):
+    with h5py.File(filename, 'w') as f:
+        f.create_dataset('best_labels',     data=result['best_labels'])
+        f.create_dataset('best_modularity', data=result['best_modularity'])
+        f.create_dataset('n_clusters',      data=result['n_clusters'])
+        # Store tree as JSON string with numpy-safe encoder
+        tree_json = json.dumps(result['tree'], cls=NumpyEncoder)
+        f.create_dataset('tree', data=tree_json)
 
-# plt.show()
+# Find the optimal k-cluster partition using brute-force search for comparison (only feasible for small graphs due to exponential scaling)
+def brute_force_k_cluster(A: np.ndarray, k: int) -> dict:
+    n = len(A)
+    best_modularity = -np.inf
+    best_partition = None
 
-gamm_beta_result = qaoa_test_gamma_beta(A, alpha=1.0, n_restarts=5)
-p_result = qaoa_test_p(A, alpha=1.0, n_restarts=5)
+    for partition in product(range(k), repeat=n):
+        modularity = modularity_calc(A, alpha=1.0, x=np.array(partition))
+        if modularity > best_modularity:
+            best_modularity = modularity
+            best_partition = partition
 
-print("Gamma and Beta Optimization Results shape:", gamm_beta_result['gammas'])
-print("P Optimization Results shape:", p_result['gamma_opt'])
+    return {
+        "best_partition": best_partition,
+        "best_modularity": best_modularity,
+    }
+
+# =============================================================================
+# Main Execution
+# =============================================================================
+# =============================================================================
+# Main Execution
+# =============================================================================
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="QAOA-based graph clustering from adjacency CSV.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    # --- Mode flags ---
+    parser.add_argument('--hierarchical', action='store_true',
+                        help="Run hierarchical k-cluster QAOA bisection.")
+    parser.add_argument('--test', action='store_true',
+                        help="Run gamma/beta and p-sweep diagnostic tests.")
+
+    # --- Shared parameters ---
+    parser.add_argument('--n_restarts', type=int, default=5,
+                        help="Number of random restarts per QAOA optimization.")
+
+    # --- Hierarchical-only parameters ---
+    parser.add_argument('--hierarchical_result', type=str, default="hierarchical_result.h5",
+                        help="Filename to save hierarchical clustering result.")
+    parser.add_argument('--p', type=int, default=1,
+                        help="QAOA circuit depth.")
+    parser.add_argument('--alpha_scale', type=float, default=1.5,
+                        help="[hierarchical] Multiplicative alpha increase per bisection level.")
+    parser.add_argument('--min_cluster_size', type=int, default=2,
+                        help="[hierarchical] Minimum subgraph size to attempt a split.")
+    parser.add_argument('--max_level', type=int, default=7,
+                        help="[hierarchical] Maximum bisection level.")
+
+    # --- Test-only parameters ---
+    parser.add_argument('--test_results', type=str, default="test_results.h5",
+                        help="Filename to save diagnostic test results.")
+    parser.add_argument('--alpha', type=float, default=1.0,
+                        help="[test] Resolution parameter for diagnostic tests.")
+
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    if not args.hierarchical and not args.test:
+        print("Nothing to run — pass --hierarchical and/or --test.")
+        return
+
+    # Validate test-specific args
+    if args.test and args.alpha is None:
+        raise ValueError("--alpha is required when running --test.")
+
+    # ------------------------------------------------------------------
+    # Hierarchical clustering
+    # ------------------------------------------------------------------
+    if args.hierarchical:
+        print("\n" + "="*60)
+        print("Running hierarchical k-cluster QAOA bisection")
+        print("="*60)
+        res = k_cluster_qaoa(
+            A,
+            p=args.p,
+            n_restarts=args.n_restarts,
+            alpha_scale=args.alpha_scale,
+            min_cluster_size=args.min_cluster_size,
+            max_level=args.max_level,
+        )
+        save_hierarchical_result(f'results/{args.hierarchical_result}', res)
+
+        print(f"\n  Final number of clusters : {res['n_clusters']}")
+        print(f"  Best modularity Q        : {res['best_modularity']:.4f}")
+        print(f"  Node labels              : {res['best_labels'].tolist()}")
+        for c in range(res['n_clusters']):
+            nodes = np.where(res['best_labels'] == c)[0].tolist()
+            print(f"    Cluster {c} ({len(nodes)} nodes): {nodes}")
+
+        if N_QUBITS < 15:
+            print("\n  Brute-force comparison:")
+            for k in range(2, res['n_clusters'] + 1):
+                bf = brute_force_k_cluster(A, k)
+                print(f"    k={k} | Q={bf['best_modularity']:.4f} | "
+                      f"Partition={list(bf['best_partition'])}")
+
+    # ------------------------------------------------------------------
+    # Diagnostic tests
+    # ------------------------------------------------------------------
+    if args.test:
+        print("\n" + "="*60)
+        print(f"Running diagnostic tests (alpha={args.alpha})")
+        print("="*60)
+
+        gamm_beta_result = qaoa_test_gamma_beta(A, alpha=args.alpha, n_restarts=args.n_restarts)
+        p_result         = qaoa_test_p(A, alpha=args.alpha, n_restarts=args.n_restarts)
+        save_test_results(f'results/{args.test_results}', gamm_beta_result, p_result)
+
+        print("\n  Gamma/Beta sweep summary:")
+        for i in range(args.n_restarts):
+            final_ev = gamm_beta_result['expected_values'][i][-1]
+            final_g  = gamm_beta_result['gammas'][i][-1]
+            final_b  = gamm_beta_result['betas'][i][-1]
+            n_iters  = len(gamm_beta_result['expected_values'][i])
+            print(f"    Restart {i}: {n_iters} iters | "
+                  f"gamma={final_g:.3f}  beta={final_b:.3f}  E={final_ev:.4f}")
+
+        print("\n  P-sweep summary:")
+        for i, p_val in enumerate(p_result['p']):
+            ev = p_result['expected values'][i]
+            print(f"    p={p_val} | E={ev:.4f} | "
+                  f"gamma={np.round(p_result['gamma_opt'][i], 3).tolist()} | "
+                  f"beta={np.round(p_result['beta_opt'][i], 3).tolist()}")
+
+
+if __name__ == "__main__":
+    main()

@@ -44,14 +44,16 @@ def load_test_results(filename: str) -> tuple:
 
     with h5py.File(filename, 'r') as f:
 
+        # --- gamma_beta: flat arrays ---
         gb = f['gamma_beta']
-        for key in sorted(gb.keys()):
-            restart = gb[key]
-            gamm_beta_result['gammas'].append(restart['gammas'][:])
-            gamm_beta_result['betas'].append(restart['betas'][:])
-            gamm_beta_result['expected_values'].append(restart['expected_values'][:])
-            gamm_beta_result['state_probs'].append(restart['state_probs'][:])
+        gamm_beta_result = {
+            'gamma':           gb['gamma'][:],
+            'beta':            gb['beta'][:],
+            'expected_values': gb['expected_values'][:],
+            'state_probs':     gb['state_probs'][:],
+        }
 
+        # --- p_sweep ---
         pr = f['p_sweep']
         p_result['p']               = pr['p'][:].tolist()
         p_result['expected values'] = pr['expected_values'][:].tolist()
@@ -127,10 +129,10 @@ def probability_distribution_at_diff_p(
         ax.bar(range(top_n), top_probs)
         ax.set_xticks(range(top_n))
         ax.set_xticklabels(top_bitstrings, rotation=45, ha='right', fontsize=8)
-        ax.set_xlabel('Basis state')
-        ax.set_ylabel('Probability')
+        if i % 3 == 0:
+            ax.set_ylabel('Probability')
         ax.set_title(
-            f'p={p_val} | E={expected_val:.4f} | '
+            f'p={p_val} | <H_c>={expected_val:.4f} | '
             f'Z$_2$ prob={total_top_prob:.3f}',
             fontsize=10,
         )
@@ -139,11 +141,45 @@ def probability_distribution_at_diff_p(
     for j in range(p_num, len(axes)):
         axes[j].set_visible(False)
 
+    # Scale all the plots to have the same y-axis limit for better comparison
+    max_prob = max(np.max(p_result['state probabilities'][i]) for i in range(p_num))
+    for ax in axes[:p_num]:
+        ax.set_ylim(0, max_prob * 1.1)
+
     fig.suptitle(
         f'QAOA probability distributions — top {top_n} states per depth',
-        fontsize=13, y=1.01,
+        fontsize=13, y=0.98,
     )
     fig.tight_layout()
     plt.show()
 
-probability_distribution_at_diff_p(load_test_results("results/test_results.h5")[1], top_n=20)
+def plot_gamma_beta_heatmaps(gamm_beta_result: dict):
+    """Plot heatmaps of expected values over the gamma-beta grid."""
+    gammas = np.array(gamm_beta_result['gamma'])
+    betas  = np.array(gamm_beta_result['beta'])
+
+    n_gamma = len(np.unique(gammas))
+    n_beta  = len(np.unique(betas))
+
+    # Shape: (n_gamma, n_beta) — then transpose so rows=beta, cols=gamma
+    EV = np.array(gamm_beta_result['expected_values']).reshape(n_gamma, n_beta).T
+
+    fig, ax = plt.subplots(figsize=(14, 6))
+    im = ax.imshow(
+        EV,
+        origin='lower',
+        aspect='auto',
+        extent=[gammas.min(), gammas.max(), betas.min(), betas.max()],
+    )
+    ax.set_xlabel(r'$\gamma$')
+    ax.set_ylabel(r'$\beta$')
+    ax.set_title(r'Expected value $\langle H_C \rangle$ over $(\gamma, \beta)$ grid')
+    fig.colorbar(im, ax=ax, label=r'$\langle H_C \rangle$')
+    plt.tight_layout()
+    plt.show()
+
+plot_gamma_beta_heatmaps(load_test_results("results/test_results.h5")[0])
+
+
+
+

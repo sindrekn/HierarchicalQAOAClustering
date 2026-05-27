@@ -14,19 +14,18 @@ def add_edges(graph: nx.Graph, edges: list, weights: list):
     for edge, weight in zip(edges, weights):
         graph.add_edge(edge[0], edge[1], weight=weight)
 
-network_graph = nx.Graph()
-graph = pd.read_csv("result/graph.csv")
-edges   = [(row['Node1'], row['Node2']) for _, row in graph.iterrows()]
-weights = [row['Weight'] for _, row in graph.iterrows()]
+def construct_graph_from_csv(filename: str) -> nx.Graph:
+    network_graph = nx.Graph()
+    graph = pd.read_csv(filename)
+    edges   = [(row['Node1'], row['Node2']) for _, row in graph.iterrows()]
+    weights = [row['Weight'] for _, row in graph.iterrows()]
 
-add_edges(network_graph, edges, weights)
+    add_edges(network_graph, edges, weights)
 
-print(f"Graph has {network_graph.number_of_nodes()} nodes and {network_graph.number_of_edges()} edges.")
+    print(f"Graph has {network_graph.number_of_nodes()} nodes and {network_graph.number_of_edges()} edges.")
 
-nodelist = sorted(network_graph.nodes())
-A = np.array(nx.adjacency_matrix(network_graph, nodelist=nodelist, weight='weight').todense())
-N_QUBITS = len(network_graph.nodes)
-DIM = 2 ** N_QUBITS
+    nodelist = sorted(network_graph.nodes())
+    return np.array(nx.adjacency_matrix(network_graph, nodelist=nodelist, weight='weight').todense())
 
 # =============================================================================
 # Pauli Matrices
@@ -206,6 +205,201 @@ class QAOAClustering:
         return format(most_probable_idx, f'0{self.N_QUBITS}b')
 
 # =============================================================================
+# QAOA on IBM quantum device
+# =============================================================================
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.circuit.library import QAOAAnsatz
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
+from qiskit_ibm_runtime import QiskitRuntimeService
+from qiskit_ibm_runtime import Session, EstimatorV2 as Estimator
+from qiskit_ibm_runtime import SamplerV2 as Sampler
+
+class QAOAClusteringIBM:
+    """
+    QAOA clustering using IBM quantum hardware via Qiskit Runtime.
+
+    Uses EstimatorV2 inside a Session for the classical optimization loop
+    (evaluating <H_C> at each step), then SamplerV2 for a final high-shot
+    measurement to extract the partition bitstring.
+
+    The optimizer trajectory — (gamma, beta, <H_C>) at every function
+    evaluation — is logged via a closure around the objective function,
+    mirroring the statevector implementation.
+    """
+
+    def __init__(
+        self,
+        A: np.ndarray,
+        alpha: float,
+        p: int,
+        n_restarts: int = 3,
+        gamma_max: float = np.pi,
+        beta_max: float  = np.pi / 2,
+        shots: int       = 4096,
+        optimization_level: int = 3,
+    ):
+        self.A           = A
+        self.alpha       = alpha
+        self.p           = p
+        self.n_restarts  = n_restarts
+        self.gamma_max   = gamma_max
+        self.beta_max    = beta_max
+        self.shots       = shots
+        self.n_qubits    = len(A)
+
+        # Build cost Hamiltonian as SparsePauliOp (excludes constant — Estimator
+        # measures operator expectation values, not absolute energies)
+        J, self.const = ising_hamiltonian_k2_modularity(A, alpha)
+        pauli_list = []
+        for i in range(self.n_qubits):
+            for j in range(i + 1, self.n_qubits):
+                if J[i, j] != 0.0:
+                    pauli_list.append(("ZZ", [i, j], J[i, j]))
+        self.cost_hamiltonian = SparsePauliOp.from_sparse_list(
+            pauli_list, num_qubits=self.n_qubits
+        )
+
+        # Build and transpile the QAOA ansatz
+        # QAOAAnsatz parameters are ordered [gamma_0,...,gamma_p, beta_0,...,beta_p]
+        ansatz_raw = QAOAAnsatz(
+            cost_operator=self.cost_hamiltonian,
+            reps=self.p,
+            name='qaoa_clustering',
+        )
+        # Store parameter order for binding later
+        self.param_names = [p.name for p in ansatz_raw.parameters]
+
+        service = QiskitRuntimeService()
+        self.backend = service.least_busy(
+            operational=True, simulator=False, min_num_qubits=self.n_qubits
+        )
+        print(f"Using backend: {self.backend.name}")
+
+        pm = generate_preset_pass_manager(
+            optimization_level=optimization_level,
+            backend=self.backend,
+        )
+        self.isa_ansatz = pm.run(ansatz_raw)
+
+        # ISA observable — layout may reorder qubits after transpilation
+        self.isa_hamiltonian = self.cost_hamiltonian.apply_layout(
+            self.isa_ansatz.layout
+        )
+
+        # Sampler circuit needs measurements
+        self.isa_ansatz_meas = self.isa_ansatz.copy()
+        self.isa_ansatz_meas.measure_all()
+
+    def _bind_params(self, params: np.ndarray) -> np.ndarray:
+        """
+        QAOAAnsatz uses the parameter order [beta_0,...,beta_p, gamma_0,...gamma_p]
+        internally (mixer before cost). Our convention is [gammas | betas].
+        Remap accordingly.
+        """
+        gammas = params[:self.p]
+        betas  = params[self.p:]
+        # QAOAAnsatz parameter name pattern: 'β[k]' and 'γ[k]'
+        bound  = np.zeros(len(self.param_names))
+        for idx, name in enumerate(self.param_names):
+            if name.startswith('β') or name.startswith('beta'):
+                layer = int(''.join(filter(str.isdigit, name)))
+                bound[idx] = betas[layer]
+            elif name.startswith('γ') or name.startswith('gamma'):
+                layer = int(''.join(filter(str.isdigit, name)))
+                bound[idx] = gammas[layer]
+        return bound
+
+    def run(self) -> dict:
+        """
+        Run the full QAOA optimization over multiple restarts.
+
+        Returns
+        -------
+        dict with keys:
+            best_params      : optimized (gamma, beta) array
+            best_energy      : best <H_C> found (including constant offset)
+            best_partition   : most probable bitstring at optimal params
+            trajectories     : list of per-restart dicts with full optimizer paths
+            counts           : raw measurement counts from final Sampler run
+        """
+        best_val        = np.inf
+        best_params     = None
+        trajectories    = []
+
+        with Session(backend=self.backend) as session:
+            estimator = Estimator(mode=session)
+            estimator.options.default_shots = 1024
+
+            for restart in range(self.n_restarts):
+                print(f"\n  Restart {restart + 1}/{self.n_restarts}")
+                trajectory = {'gammas': [], 'betas': [], 'energies': []}
+
+                def objective(params: np.ndarray) -> float:
+                    bound     = self._bind_params(params)
+                    pub       = (self.isa_ansatz, self.isa_hamiltonian, [bound])
+                    job       = estimator.run([pub])
+                    ev        = float(job.result()[0].data.evs[0]) + self.const
+                    # Log trajectory
+                    trajectory['gammas'].append(params[:self.p].tolist())
+                    trajectory['betas'].append(params[self.p:].tolist())
+                    trajectory['energies'].append(ev)
+                    return -ev   # negate: scipy minimizes, we maximize
+
+                g0 = np.random.uniform(0, self.gamma_max, self.p)
+                b0 = np.random.uniform(0, self.beta_max,  self.p)
+                x0 = np.concatenate([g0, b0])
+
+                res = minimize(
+                    objective,
+                    x0,
+                    method='COBYLA',
+                    options={'maxiter': 200, 'rhobeg': 0.5},
+                )
+
+                trajectories.append({
+                    'gammas':   np.array(trajectory['gammas']),
+                    'betas':    np.array(trajectory['betas']),
+                    'energies': np.array(trajectory['energies']),
+                })
+
+                print(f"    Best energy this restart: {-res.fun:.4f}")
+                if res.fun < best_val:
+                    best_val    = res.fun
+                    best_params = res.x.copy()
+
+            # ------------------------------------------------------------------
+            # Final measurement with Sampler at optimal parameters
+            # ------------------------------------------------------------------
+            print("\n  Running final Sampler measurement at optimal parameters...")
+            sampler = Sampler(mode=session)
+            sampler.options.default_shots = self.shots
+
+            bound_final = self._bind_params(best_params)
+            pub         = (self.isa_ansatz_meas, [bound_final])
+            job         = sampler.run([pub])
+            counts      = job.result()[0].data.meas.get_counts()
+
+        # Most probable bitstring → partition
+        best_bitstring = max(counts, key=counts.get)
+        # Reverse bit order: Qiskit is LSB-first, our convention is MSB-first
+        best_bitstring_msb = best_bitstring[::-1]
+
+        print(f"\n  Optimal partition : {best_bitstring_msb}")
+        print(f"  Best energy <H_C> : {-best_val:.4f}")
+        print(f"  Optimal params    : gamma={np.round(best_params[:self.p], 3).tolist()}"
+              f"  beta={np.round(best_params[self.p:], 3).tolist()}")
+
+        return {
+            'best_params':    best_params,
+            'best_energy':    -best_val,
+            'best_partition': best_bitstring_msb,
+            'trajectories':   trajectories,
+            'counts':         counts,
+        }
+
+
+# =============================================================================
 # QAOA Optimizer — 2-cluster
 # =============================================================================
 
@@ -214,6 +408,8 @@ def qaoa_k2_cluster(
     alpha: float,
     p: int,
     n_restarts: int,
+    gamma_max: float,
+    beta_max: float
 ) -> dict:
     """
     Optimize QAOA variational parameters for 2-cluster modularity maximization.
@@ -232,8 +428,8 @@ def qaoa_k2_cluster(
 
     for _ in range(n_restarts):
         # Random initialization of gamma in [0, pi] and beta in [0, pi/2]
-        g0 = np.random.uniform(0, np.pi,     p)
-        b0 = np.random.uniform(0, np.pi / 2, p)
+        g0 = np.random.uniform(0, gamma_max,     p)
+        b0 = np.random.uniform(0, beta_max, p)
         x0 = np.concatenate([g0, b0])
 
         res = minimize(
@@ -261,7 +457,8 @@ def qaoa_k2_cluster(
 def qaoa_test_gamma_beta(
     A: np.ndarray,
     alpha: float,
-    n_restarts: int,
+    gamma_max: float,
+    beta_max: float
 ) -> dict:
     """
     Test function to evaluate the distribution of optimized gamma and beta
@@ -270,45 +467,22 @@ def qaoa_test_gamma_beta(
     """
     k2_cluster = QAOAClustering(A, alpha=alpha)
     results = {
-        'gammas':           [],  
-        'betas':            [],  
+        'gamma':           [],  
+        'beta':            [],  
         'state_probs':      [],  
         'expected_values':  [],   
-    }
+    }   
 
-    for _ in range(n_restarts):
-        # Log every step the optimizer takes
-        trajectory = {
-            'gammas':          [],
-            'betas':           [],
-            'expected_values': [],
-            'state_probs':     [],
-        }
+    gamma_list = np.linspace(25, 65, 100)
+    beta_list = np.linspace(0, beta_max, 100)  
 
-        def objective(params):
-            ev = k2_cluster.expectation_value(1, params)
-            # Log current evaluation
-            trajectory['gammas'].append(params[0])
-            trajectory['betas'].append(params[1])
-            trajectory['expected_values'].append(ev)
-            trajectory['state_probs'].append(np.abs(k2_cluster.state) ** 2)
-            return -ev
-
-        g0 = np.random.uniform(0, np.pi)
-        b0 = np.random.uniform(0, np.pi / 2)
-        x0 = np.array([g0, b0])
-
-        res = minimize(
-            objective,
-            x0,
-            method='COBYLA',
-            options={'maxiter': 5, 'rhobeg': 0.5},
-        )
-
-        results['gammas'].append(np.array(trajectory['gammas']))
-        results['betas'].append(np.array(trajectory['betas']))
-        results['state_probs'].append(np.array(trajectory['state_probs']))
-        results['expected_values'].append(np.array(trajectory['expected_values']))
+    for gamma in gamma_list:
+        for beta in beta_list:
+            ev = k2_cluster.expectation_value(1, np.array([gamma, beta]))
+            results['gamma'].append(gamma)
+            results['beta'].append(beta)
+            results['expected_values'].append(ev)
+            results['state_probs'].append(np.abs(k2_cluster.state) ** 2)
 
     return results
 
@@ -316,6 +490,8 @@ def qaoa_test_p(
     A: np.ndarray,
     alpha: float,
     n_restarts: int,
+    gamma_max: float,
+    beta_max: float
 ) -> dict:
     """
     Test function to evaluate the effect of varying the QAOA circuit depth p on the 
@@ -331,8 +507,8 @@ def qaoa_test_p(
         best_res = None
         for _ in range(n_restarts):
             # Random initialization of gamma in [0, pi] and beta in [0, pi/2]
-            g0 = np.random.uniform(0, np.pi,     p)
-            b0 = np.random.uniform(0, np.pi / 2, p)
+            g0 = np.random.uniform(0, gamma_max,     p)
+            b0 = np.random.uniform(0, beta_max, p)
             x0 = np.concatenate([g0, b0])
 
             res = minimize(
@@ -369,6 +545,8 @@ def k_cluster_qaoa(
     alpha_scale: float = 1.5,
     min_cluster_size: int = 2,
     max_level: int = 7,
+    gamma_max: float = np.pi,
+    beta_max: float = np.pi / 2
 ) -> dict:
     """
     Hierarchical bisection clustering using QAOA.
@@ -404,6 +582,8 @@ def k_cluster_qaoa(
         depth: int,
         alpha: float,
         node_key: str,
+        gamma_max: float, 
+        beta_max: float
     ) -> None:
         """
         Recursively bisect a subgraph and update shared state if accepted.
@@ -429,7 +609,7 @@ def k_cluster_qaoa(
             return
 
         # Run 2-cluster QAOA on this subgraph
-        results = qaoa_k2_cluster(subA, alpha=alpha, p=p, n_restarts=n_restarts)
+        results = qaoa_k2_cluster(subA, alpha=alpha, p=p, n_restarts=n_restarts, gamma_max=gamma_max, beta_max=beta_max)
         local_config = np.array(list(results["best_partition"]), dtype=int)
         tree_node["qaoa_results"] = {
             "params":       results["params"],
@@ -477,6 +657,8 @@ def k_cluster_qaoa(
                 depth=depth + 1,
                 alpha=child_alpha,
                 node_key=f"{node_key}_C0",
+                gamma_max=gamma_max,
+                beta_max=beta_max
             )
             _bisect(
                 subA=subA[np.ix_(mask1, mask1)],
@@ -485,6 +667,8 @@ def k_cluster_qaoa(
                 depth=depth + 1,
                 alpha=child_alpha,
                 node_key=f"{node_key}_C1",
+                gamma_max=gamma_max,
+                beta_max=beta_max
             )
         else:
             print(
@@ -501,6 +685,8 @@ def k_cluster_qaoa(
         depth=0,
         alpha=1.0,
         node_key="root",
+        gamma_max=gamma_max,
+        beta_max=beta_max
     )
 
     print(f"\nFinal partition into {state['n_clusters']} clusters:")
@@ -521,14 +707,12 @@ def k_cluster_qaoa(
 def save_test_results(filename: str, gamm_beta_result: dict, p_result: dict):
     with h5py.File(filename, 'w') as f:
 
-        # --- qaoa_test_gamma_beta results ---
+        # --- qaoa_test_gamma_beta results (flat grid, no restart structure) ---
         gb = f.create_group('gamma_beta')
-        for i in range(len(gamm_beta_result['gammas'])):
-            restart = gb.create_group(f'restart_{i}')
-            restart.create_dataset('gammas',          data=gamm_beta_result['gammas'][i])
-            restart.create_dataset('betas',           data=gamm_beta_result['betas'][i])
-            restart.create_dataset('expected_values', data=gamm_beta_result['expected_values'][i])
-            restart.create_dataset('state_probs',     data=gamm_beta_result['state_probs'][i])
+        gb.create_dataset('gamma',          data=np.array(gamm_beta_result['gamma']))
+        gb.create_dataset('beta',           data=np.array(gamm_beta_result['beta']))
+        gb.create_dataset('expected_values', data=np.array(gamm_beta_result['expected_values']))
+        gb.create_dataset('state_probs',    data=np.array(gamm_beta_result['state_probs']))
 
         # --- qaoa_test_p results ---
         pr = f.create_group('p_sweep')
@@ -597,6 +781,12 @@ def parse_args():
     # --- Shared parameters ---
     parser.add_argument('--n_restarts', type=int, default=5,
                         help="Number of random restarts per QAOA optimization.")
+    parser.add_argument('--gamma_max', type=float, default=np.pi,
+                        help="Maximum gamma value for random initialization.")
+    parser.add_argument('--beta_max', type=float, default=np.pi / 2,
+                        help="Maximum beta value for random initialization.")
+    parser.add_argument('--graphfile', type=str, default="graphs/graph.csv",
+                        help="CSV file containing graph edges and weights.")
 
     # --- Hierarchical-only parameters ---
     parser.add_argument('--hierarchical_result', type=str, default="hierarchical_result.h5",
@@ -630,6 +820,9 @@ def main():
     if args.test and args.alpha is None:
         raise ValueError("--alpha is required when running --test.")
 
+    # Construct graph from CSV
+    A = construct_graph_from_csv(args.graphfile)
+
     # ------------------------------------------------------------------
     # Hierarchical clustering
     # ------------------------------------------------------------------
@@ -644,6 +837,8 @@ def main():
             alpha_scale=args.alpha_scale,
             min_cluster_size=args.min_cluster_size,
             max_level=args.max_level,
+            gamma_max=args.gamma_max,
+            beta_max=args.beta_max
         )
         save_hierarchical_result(f'results/{args.hierarchical_result}', res)
 
@@ -669,18 +864,20 @@ def main():
         print(f"Running diagnostic tests (alpha={args.alpha})")
         print("="*60)
 
-        gamm_beta_result = qaoa_test_gamma_beta(A, alpha=args.alpha, n_restarts=args.n_restarts)
-        p_result         = qaoa_test_p(A, alpha=args.alpha, n_restarts=args.n_restarts)
-        save_test_results(f'results/{args.test_results}', gamm_beta_result, p_result)
+        gamma_beta_result = qaoa_test_gamma_beta(A, alpha=args.alpha, gamma_max=args.gamma_max, beta_max=args.beta_max)
+        p_result         = qaoa_test_p(A, alpha=args.alpha, n_restarts=args.n_restarts, gamma_max=args.gamma_max, beta_max=args.beta_max)
+        save_test_results(f'results/{args.test_results}', gamma_beta_result, p_result)
 
-        print("\n  Gamma/Beta sweep summary:")
-        for i in range(args.n_restarts):
-            final_ev = gamm_beta_result['expected_values'][i][-1]
-            final_g  = gamm_beta_result['gammas'][i][-1]
-            final_b  = gamm_beta_result['betas'][i][-1]
-            n_iters  = len(gamm_beta_result['expected_values'][i])
-            print(f"    Restart {i}: {n_iters} iters | "
-                  f"gamma={final_g:.3f}  beta={final_b:.3f}  E={final_ev:.4f}")
+        print("\n  Gamma/Beta best result:")
+
+        final_ev = np.array(gamma_beta_result['expected_values'])
+        final_g  = np.array(gamma_beta_result['gamma'])
+        final_b  = np.array(gamma_beta_result['beta'])
+        max_ev = np.max(final_ev)
+        max_idx = np.argmax(final_ev)
+        gamma = final_g[max_idx]
+        beta = final_b[max_idx]
+        print(f"    E={max_ev:.4f} | gamma={gamma:.3f} | beta={beta:.3f}")
 
         print("\n  P-sweep summary:")
         for i, p_val in enumerate(p_result['p']):
@@ -690,5 +887,19 @@ def main():
                   f"beta={np.round(p_result['beta_opt'][i], 3).tolist()}")
 
 
+
 if __name__ == "__main__":
-    main()
+    # Check the eigenvalue gaps
+    k2_cluster = QAOAClustering(A, alpha=1.0)
+    eigs = np.sort(np.unique(np.round(k2_cluster.cost_diag, 8)))
+    gaps = np.diff(eigs)
+    min_gap = gaps[gaps > 0].min()
+    nyquist_gamma = np.pi / min_gap  # grid step must be smaller than this
+    print(f"Min eigenvalue gap : {min_gap:.6f}")
+    print(f"Max safe gamma step: {nyquist_gamma:.4f}")
+    print(f"Your current step  : {50/100:.4f}")
+    
+
+    eigs = np.sort(np.unique(np.round(k2_cluster.cost_diag, 6)))
+    print(f"Number of distinct eigenvalues: {len(eigs)}")
+    print(f"Eigenvalues: {eigs}")

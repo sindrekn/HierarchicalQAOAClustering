@@ -5,6 +5,12 @@ import pandas as pd
 import networkx as nx
 import matplotlib.pyplot as plt
 
+graph = "SmallKarateClub"
+
+result_test_path = f"/home/sindrekampennesheim/Documents/PhD/FYS5419/Project_ClusteringQAOA/results/{graph}-Test.h5"
+result_hierarchical_path = f"/home/sindrekampennesheim/Documents/PhD/FYS5419/Project_ClusteringQAOA/results/{graph}-Hierarchical.h5"
+graph_path = f"graphs/{graph}.csv"
+
 # =============================================================================
 # Create the graph from the CSV file
 # ==============================================================================
@@ -13,7 +19,7 @@ def add_edges(graph: nx.Graph, edges: list, weights: list):
         graph.add_edge(edge[0], edge[1], weight=weight)
 
 network_graph = nx.Graph()
-graph = pd.read_csv("graphs/graph.csv")
+graph = pd.read_csv(graph_path)
 edges   = [(row['Node1'], row['Node2']) for _, row in graph.iterrows()]
 weights = [row['Weight'] for _, row in graph.iterrows()]
 
@@ -66,9 +72,9 @@ def load_test_results(filename: str) -> tuple:
 
     return gamm_beta_result, p_result
 
-def plot_optimal_configurations():    
+def plot_optimal_configurations(result_path: str):    
     """Plot the optimal clustering configuration from the hierarchical clustering result."""
-    res = load_hierarchical_result("results/hierarchical_result.h5")
+    res = load_hierarchical_result(result_path)
     
     # Plot the resulting partition
     G = nx.from_numpy_array(A)
@@ -85,7 +91,7 @@ def plot_optimal_configurations():
     plt.axis('off')
     plt.show()
 
-def probability_distribution_at_diff_p(
+def plot_probability_distribution_at_diff_p(
     p_result: dict,
     top_n: int = 10,
 ):
@@ -169,17 +175,17 @@ def plot_gamma_beta_heatmaps(gamm_beta_result: dict):
         EV,
         origin='lower',
         aspect='auto',
-        extent=[gammas.min(), gammas.max(), betas.min(), betas.max()],
+        extent=[gammas.min()/(np.pi), gammas.max()/(np.pi), betas.min()/(np.pi), betas.max()/(np.pi)],
     )
-    ax.set_xlabel(r'$\gamma$')
-    ax.set_ylabel(r'$\beta$')
+    ax.set_xlabel(r'$\gamma / \pi$')
+    ax.set_ylabel(r'$\beta / \pi$')
     ax.set_title(r'Expected value $\langle H_C \rangle$ over $(\gamma, \beta)$ grid')
     fig.colorbar(im, ax=ax, label=r'$\langle H_C \rangle$')
     plt.tight_layout()
     plt.show()
 
-plot_gamma_beta_heatmaps(load_test_results("results/test_results.h5")[0])
-
-
+# plot_gamma_beta_heatmaps(load_test_results(result_path)[0])
+plot_optimal_configurations(result_hierarchical_path)
+# plot_probability_distribution_at_diff_p(load_test_results(result_path)[1], top_n=10)
 
 

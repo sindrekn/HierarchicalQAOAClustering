@@ -167,7 +167,7 @@ def pauli_z_hamiltonian_k2_modularity(A: np.ndarray, alpha: float) -> np.ndarray
 # QAOA State Evolution
 # =============================================================================
 
-class QAOAClustering:
+class QuantumCircuit:
     """
     Statevector simulation of the QAOA circuit for k=2 graph clustering.
 
@@ -303,7 +303,7 @@ def qaoa_k2_cluster(
     Returns a dict with the best parameters, measurement probabilities,
     and the most probable bitstring partition.
     """
-    k2_cluster = QAOAClustering(A, alpha=alpha)
+    k2_cluster = QuantumCircuit(A, alpha=alpha)
 
     best_val = np.inf
     best_res = None
@@ -347,7 +347,7 @@ def test_gamma_beta(
     parameters across multiple random restarts of the 2-cluster QAOA optimization.
     Logs every function evaluation made by the optimizer, not just the final result.
     """
-    cluster = QAOAClustering(A, alpha=alpha)
+    cluster = QuantumCircuit(A, alpha=alpha)
     results = {
         'gamma':           [],  
         'beta':            [],  
@@ -380,7 +380,7 @@ def test_depth(
     optimized parameters and resulting state probabilities for the 2-cluster 
     modularity maximization problem.
     """
-    cluster = QAOAClustering(A, alpha=alpha)
+    cluster = QuantumCircuit(A, alpha=alpha)
 
     results = {'p': [],'beta_opt': [], 'gamma_opt': [], 'state probabilities': [], 'expected values': []}
 

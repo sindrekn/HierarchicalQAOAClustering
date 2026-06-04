@@ -1,7 +1,0 @@
-python HierarchicalClusteringQAOA_ClassicalSimualtion.py --hierarchical --test --n_restarts 100 --graphfile "graphs/HomeMadeGraph1.csv" --hierarchical_result "/home/sindrekampennesheim/Documents/PhD/FYS5419/Project_ClusteringQAOA/results/HomeMadeGraph1-Hierarchical.h5" --test_result "/home/sindrekampennesheim/Documents/PhD/FYS5419/Project_ClusteringQAOA/results/HomeMadeGraph1-Test.h5"
-
-python HierarchicalClusteringQAOA_ClassicalSimualtion.py --hierarchical --test --n_restarts 100 --graphfile "graphs/XXSgraph.csv" --hierarchical_result "/home/sindrekampennesheim/Documents/PhD/FYS5419/Project_ClusteringQAOA/results/XXSgraph-Hierarchical.h5" --test_result "/home/sindrekampennesheim/Documents/PhD/FYS5419/Project_ClusteringQAOA/results/XXSgraph-Test.h5"
-
-python HierarchicalClusteringQAOA_ClassicalSimualtion.py --hierarchical --test --n_restarts 100 --graphfile "graphs/HomeMadeGraph2.csv" --hierarchical_result "/home/sindrekampennesheim/Documents/PhD/FYS5419/Project_ClusteringQAOA/results/HomeMadeGraph2-Hierarchical.h5" --test_result "/home/sindrekampennesheim/Documents/PhD/FYS5419/Project_ClusteringQAOA/results/HomeMadeGraph2-Test.h5"
-
-python HierarchicalClusteringQAOA_ClassicalSimualtion.py --hierarchical --test --n_restarts 100 --graphfile "graphs/SmallKarateClub.csv" --hierarchical_result "/home/sindrekampennesheim/Documents/PhD/FYS5419/Project_ClusteringQAOA/results/SmallKarateClub-Hierarchical.h5" --test_result "/home/sindrekampennesheim/Documents/PhD/FYS5419/Project_ClusteringQAOA/results/SmallKarateClub-Test.h5"

@@ -4,12 +4,13 @@ import numpy as np
 import pandas as pd
 import networkx as nx
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 
-graph = "SmallKarateClub"
+graph_name = "SmallKarateClub"
 
-result_test_path = f"/home/sindrekampennesheim/Documents/PhD/FYS5419/Project_ClusteringQAOA/results/{graph}-Test.h5"
-result_hierarchical_path = f"/home/sindrekampennesheim/Documents/PhD/FYS5419/Project_ClusteringQAOA/results/{graph}-Hierarchical.h5"
-graph_path = f"graphs/{graph}.csv"
+result_analyse_path = f"/home/sindrekampennesheim/Documents/PhD/FYS5419/Project_ClusteringQAOA/results/{graph_name}-analyse.h5"
+result_hierarchical_path = f"/home/sindrekampennesheim/Documents/PhD/FYS5419/Project_ClusteringQAOA/results/{graph_name}-Hierarchical.h5"
+graph_path = f"graphs/{graph_name}.csv"
 
 # =============================================================================
 # Create the graph from the CSV file
@@ -44,7 +45,7 @@ def load_hierarchical_result(filename: str) -> dict:
         'tree':            tree,
     }
 
-def load_test_results(filename: str) -> tuple:
+def load_analyse_results(filename: str) -> tuple:
     gamm_beta_result = {'gammas': [], 'betas': [], 'expected_values': [], 'state_probs': []}
     p_result = {'p': [], 'gamma_opt': [], 'beta_opt': [], 'state probabilities': [], 'expected values': []}
 
@@ -72,7 +73,7 @@ def load_test_results(filename: str) -> tuple:
 
     return gamm_beta_result, p_result
 
-def plot_optimal_configurations(result_path: str):    
+def plot_optimal_configurations(result_path: str, graph_name: str):    
     """Plot the optimal clustering configuration from the hierarchical clustering result."""
     res = load_hierarchical_result(result_path)
     
@@ -87,8 +88,9 @@ def plot_optimal_configurations(result_path: str):
 
     plt.figure(figsize=(8, 6))
     nx.draw_networkx(G, with_labels=True, node_color=colors, node_size=500)
-    plt.title(f"Hierarchical QAOA Clustering (Q={res['best_modularity']:.4f}, k={res['n_clusters']})")
+    # plt.title(f"Hierarchical QAOA Clustering (Q={res['best_modularity']:.4f}, k={res['n_clusters']})")
     plt.axis('off')
+    plt.savefig(f"/home/sindrekampennesheim/Documents/PhD/FYS5419/Project_ClusteringQAOA/Plots/OptimalConfigurations/{graph_name}_OptimalConfig.pdf", bbox_inches='tight')
     plt.show()
 
 def plot_probability_distribution_at_diff_p(
@@ -108,18 +110,18 @@ def plot_probability_distribution_at_diff_p(
     n_qubits = int(np.log2(len(p_result['state probabilities'][0])))
 
     # Build subplot grid
-    if p_num <= 3:
+    if p_num <= 2:
         fig, axes = plt.subplots(1, p_num, figsize=(5 * p_num, 5))
         axes = np.atleast_1d(axes)  # ensure iterable when p_num == 1
     else:
-        ncols = 3
+        ncols = 2
         nrows = (p_num + ncols - 1) // ncols
-        fig, axes = plt.subplots(nrows, ncols, figsize=(18, 5 * nrows))
+        fig, axes = plt.subplots(nrows, ncols, figsize=(10, 5 * nrows))
         axes = axes.flatten()
 
     for i, p_val in enumerate(p_vals):
         # p_result['state probabilities'][i] is the state prob vector for depth p_val
-        # (already the best over restarts from qaoa_test_p)
+        # (already the best over restarts from qaoa_analyse_p)
         state_probs_p = p_result['state probabilities'][i]
         expected_val  = p_result['expected values'][i]
 
@@ -134,14 +136,22 @@ def plot_probability_distribution_at_diff_p(
         ax = axes[i]
         ax.bar(range(top_n), top_probs)
         ax.set_xticks(range(top_n))
-        ax.set_xticklabels(top_bitstrings, rotation=45, ha='right', fontsize=8)
-        if i % 3 == 0:
-            ax.set_ylabel('Probability')
-        ax.set_title(
-            f'p={p_val} | <H_c>={expected_val:.4f} | '
-            f'Z$_2$ prob={total_top_prob:.3f}',
-            fontsize=10,
+        ax.set_xticklabels(top_bitstrings, rotation=30, ha='right', fontsize=11)
+        
+        if i % 2 == 0:
+            ax.set_ylabel('Probability', fontsize=14)
+
+        legend_label = f'p={p_val}\n$\langle H_c \\rangle$={expected_val:.4f}\nP={total_top_prob:.3f}'        
+        blank_handle = Line2D([0], [0], linestyle='none', marker='none', label=legend_label)
+        ax.legend(
+            handles=[blank_handle], 
+            loc='upper right', 
+            handlelength=0, 
+            handletextpad=0,
+            frameon=True,
+            fontsize=14
         )
+
 
     # Hide any unused subplots
     for j in range(p_num, len(axes)):
@@ -152,11 +162,15 @@ def plot_probability_distribution_at_diff_p(
     for ax in axes[:p_num]:
         ax.set_ylim(0, max_prob * 1.1)
 
-    fig.suptitle(
-        f'QAOA probability distributions — top {top_n} states per depth',
-        fontsize=13, y=0.98,
-    )
-    fig.tight_layout()
+    # fig.tight_layout()
+    fig.subplots_adjust(
+    left=0.08,    # Space on the left edge of the figure
+    right=0.99,   # Space on the right edge of the figure
+    top=0.97,     # Space on the top edge of the figure
+    bottom=0.08,  # Space on the bottom edge of the figure
+    wspace=0.3,  # Width spacing BETWEEN the subplot boxes
+    hspace=0.3   # Height spacing BETWEEN the subplot boxes (great for rotated labels)
+)
     plt.show()
 
 def plot_gamma_beta_heatmaps(gamm_beta_result: dict):
@@ -170,7 +184,7 @@ def plot_gamma_beta_heatmaps(gamm_beta_result: dict):
     # Shape: (n_gamma, n_beta) — then transpose so rows=beta, cols=gamma
     EV = np.array(gamm_beta_result['expected_values']).reshape(n_gamma, n_beta).T
 
-    fig, ax = plt.subplots(figsize=(14, 6))
+    fig, ax = plt.subplots(figsize=(7, 4.5))
     im = ax.imshow(
         EV,
         origin='lower',
@@ -179,13 +193,14 @@ def plot_gamma_beta_heatmaps(gamm_beta_result: dict):
     )
     ax.set_xlabel(r'$\gamma / \pi$')
     ax.set_ylabel(r'$\beta / \pi$')
-    ax.set_title(r'Expected value $\langle H_C \rangle$ over $(\gamma, \beta)$ grid')
+    # ax.set_title(r'Expected value $\langle H_C \rangle$ over $(\gamma, \beta)$ grid')
     fig.colorbar(im, ax=ax, label=r'$\langle H_C \rangle$')
     plt.tight_layout()
+    # plt.savefig(f"/home/sindrekampennesheim/Documents/PhD/FYS5419/Project_ClusteringQAOA/Plots/GammaBetaHeatPlots/Gamma_beta_{graph_name}.pdf", bbox_inches='tight')
     plt.show()
 
-# plot_gamma_beta_heatmaps(load_test_results(result_path)[0])
-plot_optimal_configurations(result_hierarchical_path)
-# plot_probability_distribution_at_diff_p(load_test_results(result_path)[1], top_n=10)
+# plot_gamma_beta_heatmaps(load_analyse_results(result_analyse_path)[0])
+# plot_optimal_configurations(result_hierarchical_path, graph_name)
+plot_probability_distribution_at_diff_p(load_analyse_results(result_analyse_path)[1], top_n=10)
 
 

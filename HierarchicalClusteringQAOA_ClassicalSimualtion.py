@@ -138,7 +138,7 @@ def kron_two(op_i: np.ndarray, qi: int, op_j: np.ndarray, qj: int, n_qubits: int
     return result
 
 
-def pauli_z_hamiltonian_k2_modularity(A: np.ndarray, alpha: float) -> np.ndarray:
+def pauli_z_hamiltonian(A: np.ndarray, alpha: float) -> np.ndarray:
     """
     Construct the full 2^n x 2^n cost Hamiltonian H_C in the computational basis.
 
@@ -180,7 +180,7 @@ class QuantumCircuit:
     LLM assisted
     ------------
     Tool: Claude (2026), Github Copilot (2026)
-    The funciton apply_mixer was created by claude and I only debugged and tested it. 
+    The funciton apply_mixer was created by claude and I only debugged and analyseed it. 
     Else, only debugging and some comments were made by Github Copilot. 
     """
 
@@ -190,7 +190,7 @@ class QuantumCircuit:
         self.dim = 2 ** self.N_QUBITS
         self.qubit_shape = [2] * self.N_QUBITS
         # Only the diagonal is needed since H_C is diagonal in the comp. basis
-        self.cost_diag = np.diag(pauli_z_hamiltonian_k2_modularity(A, alpha=alpha)).real
+        self.cost_diag = np.diag(pauli_z_hamiltonian(A, alpha=alpha)).real
         self.state = None
 
     def apply_cost_unitary(self, gamma: float):
@@ -232,9 +232,9 @@ class QuantumCircuit:
         most_probable_idx = np.argmax(probs)
         return format(most_probable_idx, f'0{self.N_QUBITS}b')
     
-    def test_periodicity(self, M): 
+    def analyse_periodicity(self, M): 
         """
-        Test the priodicity of a matrix in the exponential exp(-i gamma M).
+        analyse the priodicity of a matrix in the exponential exp(-i gamma M).
 
         As far, not in use and not correct, needs to be changed. 
         """
@@ -253,7 +253,7 @@ class QuantumCircuit:
         print(f"Diagonal entries as fractions: {[str(f) for f in fractions]}")
         print(f"Theoretical Period (T): {theoretical_period:.6f} ({true_lcm_num}/{true_gcd_den} * 2pi)\n")
 
-        # 3. Test function
+        # 3. analyse function
         def matrix_exp(gamma, matrix):
             return np.diag(np.exp(-1j * gamma * np.diag(matrix)))
 
@@ -336,14 +336,14 @@ def qaoa_k2_cluster(
     }
     return results
 
-def test_gamma_beta(
+def analyse_gamma_beta(
     A: np.ndarray,
     alpha: float,
     gamma_max: float,
     beta_max: float
 ) -> dict:
     """
-    Test function to evaluate the distribution of optimized gamma and beta
+    Analyse function to evaluate the distribution of optimized gamma and beta
     parameters across multiple random restarts of the 2-cluster QAOA optimization.
     Logs every function evaluation made by the optimizer, not just the final result.
     """
@@ -368,7 +368,7 @@ def test_gamma_beta(
 
     return results
 
-def test_depth(
+def analyse_depth(
     A: np.ndarray,
     alpha: float,
     n_restarts: int,
@@ -376,7 +376,7 @@ def test_depth(
     beta_max: float
 ) -> dict:
     """
-    Test function to evaluate the effect of varying the QAOA circuit depth p on the 
+    Analyse function to evaluate the effect of varying the QAOA circuit depth p on the 
     optimized parameters and resulting state probabilities for the 2-cluster 
     modularity maximization problem.
     """
@@ -384,11 +384,11 @@ def test_depth(
 
     results = {'p': [],'beta_opt': [], 'gamma_opt': [], 'state probabilities': [], 'expected values': []}
 
-    for p in range(1, 7):  # Test p from 1 to 6
+    for p in range(1, 7):  # analyse p from 1 to 6
         best_val = np.inf
         best_res = None
         for _ in range(n_restarts):
-            # Random initialization of gamma in [0, pi] and beta in [0, pi/2]
+            # Random initialization of gamma and beta
             g0 = np.random.uniform(0, gamma_max, p)
             b0 = np.random.uniform(0, beta_max, p)
             x0 = np.concatenate([b0, g0])
@@ -423,11 +423,12 @@ def HierarchicalBisection(
     A: np.ndarray,
     p: int = 1,
     n_restarts: int = 3,
-    alpha_scale: float = 1.5,
     min_cluster_size: int = 2,
     max_level: int = 7,
     gamma_max: float = np.pi,
-    beta_max: float = np.pi / 2
+    beta_max: float = np.pi / 2,
+    alpha: float = 1.0,
+    alpha_scale: float = 1.5
 ) -> dict:
     """
     Hierarchical bisection clustering using QAOA.
@@ -442,16 +443,15 @@ def HierarchicalBisection(
     A                : Adjacency matrix of the original graph (never modified).
     p                : QAOA circuit depth.
     n_restarts       : Random restarts per QAOA optimization.
-    alpha_scale      : Multiplicative alpha increase per recursion depth.
     min_cluster_size : Do not attempt to split clusters smaller than this.
     max_level        : Maximum bisection level.
 
     LLM assisted
     ------------
     Tool: Claude (2026), Github Copilot (2026)
-    The recursive function _bisect was originaly created by claude, but had to be 
-    recreated by me to work the way intended. Both Claude and Github Copilot were 
-    used to debug the function and comments were made by Claude.
+    The recursive function _bisect was originaly created by me, but with heavy 
+    help from both claude and Github Copilot to establish the logic for the 
+    fucntion.
     """
     n = len(A)
 
@@ -484,11 +484,10 @@ def HierarchicalBisection(
         # Record this node in the bisection tree regardless of outcome
         tree_node = {
             "depth":          depth,
-            "alpha":          alpha,
             "global_indices": global_indices.tolist(),
             "sub_n":          sub_n,
             "split_accepted": False,
-            "children":       {},
+            "alpha":          alpha,
         }
         state["tree"][node_key] = tree_node
 
@@ -537,13 +536,12 @@ def HierarchicalBisection(
                 f"Q={global_modularity:.4f}"
             )
 
-            child_alpha = alpha * alpha_scale
             _bisect(
                 subA=subA[np.ix_(mask0, mask0)],
                 global_indices=global_indices[mask0],
                 current_labels=proposed_labels,
                 depth=depth + 1,
-                alpha=child_alpha,
+                alpha=alpha * alpha_scale,
                 node_key=f"{node_key}_C0",
                 gamma_max=gamma_max,
                 beta_max=beta_max
@@ -553,7 +551,7 @@ def HierarchicalBisection(
                 global_indices=global_indices[mask1],
                 current_labels=proposed_labels,
                 depth=depth + 1,
-                alpha=child_alpha,
+                alpha=alpha * alpha_scale,
                 node_key=f"{node_key}_C1",
                 gamma_max=gamma_max,
                 beta_max=beta_max
@@ -565,13 +563,13 @@ def HierarchicalBisection(
                 f"Q={global_modularity:.4f} ≤ best={state['best_modularity']:.4f}"
             )
 
-    # Start recursion from the full graph with standard alpha=1.0
+    # Start recursion from the full graph
     _bisect(
         subA=A,
         global_indices=np.arange(n),
         current_labels=state["best_labels"].copy(),
         depth=0,
-        alpha=1.0,
+        alpha=alpha,
         node_key="root",
         gamma_max=gamma_max,
         beta_max=beta_max
@@ -592,25 +590,25 @@ def HierarchicalBisection(
 # Storage
 # =============================================================================
 
-def save_test_results(filename: str, gamm_beta_result: dict, p_result: dict):
+def save_analyse_results(filename: str, gamm_beta_result: dict, p_result: dict):
     """
-    Save the results of the gamma/beta grid test and the p-sweep test to an HDF5 file.
+    Save the results of the gamma/beta grid analyse and the p-sweep analyse to an HDF5 file.
 
     LLM assisted
     ------------
     Tool: Claude (2026)
-    Created originaly by Claude, but with heavy editing and testing afterwards.
+    Created originaly by Claude, but with heavy editing and analyseing afterwards.
     """
     with h5py.File(filename, 'w') as f:
 
-        # --- qaoa_test_gamma_beta results (flat grid, no restart structure) ---
+        # --- qaoa_analyse_gamma_beta results (flat grid, no restart structure) ---
         gb = f.create_group('gamma_beta')
         gb.create_dataset('gamma',          data=np.array(gamm_beta_result['gamma']))
         gb.create_dataset('beta',           data=np.array(gamm_beta_result['beta']))
         gb.create_dataset('expected_values', data=np.array(gamm_beta_result['expected_values']))
         gb.create_dataset('state_probs',    data=np.array(gamm_beta_result['state_probs']))
 
-        # --- qaoa_test_p results ---
+        # --- qaoa_analyse_p results ---
         pr = f.create_group('p_sweep')
         pr.create_dataset('p',               data=np.array(p_result['p']))
         pr.create_dataset('expected_values', data=np.array(p_result['expected values']))
@@ -627,7 +625,7 @@ class NumpyEncoder(json.JSONEncoder):
     LLM assisted
     ------------
     Tool: Claude (2026)
-    Created entirely by Claude and only tested by me. 
+    Created entirely by Claude and only analyseed by me. 
     """
     def default(self, obj):
         if isinstance(obj, np.ndarray):
@@ -688,7 +686,7 @@ def brute_force_k_cluster(A: np.ndarray, k: int) -> dict:
 # =============================================================================
 def parse_args():
     """
-    Parse command-line arguments for hierarchical clustering and diagnostic tests.
+    Parse command-line arguments for hierarchical clustering and diagnostic analyses.
 
     LLM assisted
     ------------
@@ -702,8 +700,8 @@ def parse_args():
     # --- Mode flags ---
     parser.add_argument('--hierarchical', action='store_true',
                         help="Run hierarchical k-cluster QAOA bisection.")
-    parser.add_argument('--test', action='store_true',
-                        help="Run gamma/beta and p-sweep diagnostic tests.")
+    parser.add_argument('--analyse', action='store_true',
+                        help="Run gamma/beta and p-sweep diagnostic analyses.")
 
     # --- Shared parameters ---
     parser.add_argument('--n_restarts', type=int, default=5,
@@ -714,31 +712,31 @@ def parse_args():
                         help="Maximum beta value for random initialization.")
     parser.add_argument('--graphfile', type=str, default="graphs/graph.csv",
                         help="CSV file containing graph edges and weights.")
+    parser.add_argument('--alpha', type=float, default=1.0,
+                        help="[analyse] Resolution parameter for diagnostic analyses.")
 
     # --- Hierarchical-only parameters ---
     parser.add_argument('--hierarchical_result', type=str, default="results/hierarchical_result.h5",
                         help="Filename to save hierarchical clustering result.")
     parser.add_argument('--p', type=int, default=1,
                         help="QAOA circuit depth.")
-    parser.add_argument('--alpha_scale', type=float, default=1.5,
-                        help="[hierarchical] Multiplicative alpha increase per bisection level.")
     parser.add_argument('--min_cluster_size', type=int, default=2,
                         help="[hierarchical] Minimum subgraph size to attempt a split.")
     parser.add_argument('--max_level', type=int, default=7,
                         help="[hierarchical] Maximum bisection level.")
+    parser.add_argument('--alpha_scale', type=float, default=1.5,
+                        help="[hierarchical] Scaling factor for alpha at each level of the tree.")
 
-    # --- Test-only parameters ---
-    parser.add_argument('--test_results', type=str, default="results/test_results.h5",
-                        help="Filename to save diagnostic test results.")
-    parser.add_argument('--alpha', type=float, default=1.0,
-                        help="[test] Resolution parameter for diagnostic tests.")
+    # --- analyse-only parameters ---
+    parser.add_argument('--analyse_results', type=str, default="results/analyse_results.h5",
+                        help="Filename to save diagnostic analyse results.")
 
     return parser.parse_args()
 
 
 def main():
     """
-    Main execution function to run hierarchical clustering and/or diagnostic tests based on command-line arguments.
+    Main execution function to run hierarchical clustering and/or diagnostic analyses based on command-line arguments.
 
     LLM assisted
     ------------
@@ -747,8 +745,8 @@ def main():
     """
     args = parse_args()
 
-    if not args.hierarchical and not args.test:
-        print("Nothing to run — pass --hierarchical and/or --test.")
+    if not args.hierarchical and not args.analyse:
+        print("Nothing to run — pass --hierarchical and/or --analyse.")
         return
 
     # Construct graph from CSV
@@ -765,11 +763,12 @@ def main():
             A,
             p=args.p,
             n_restarts=args.n_restarts,
-            alpha_scale=args.alpha_scale,
             min_cluster_size=args.min_cluster_size,
             max_level=args.max_level,
             gamma_max=args.gamma_max,
-            beta_max=args.beta_max
+            beta_max=args.beta_max,
+            alpha=args.alpha,
+            alpha_scale=args.alpha_scale
         )
         save_hierarchical_result(f'{args.hierarchical_result}', res)
 
@@ -787,16 +786,16 @@ def main():
                     f"Partition={[int(x) for x in bf['best_partition']]}")
 
     # ------------------------------------------------------------------
-    # Diagnostic tests
+    # Diagnostic analyses
     # ------------------------------------------------------------------
-    if args.test:
+    if args.analyse:
         print("\n" + "="*60)
-        print(f"Running diagnostic tests (alpha={args.alpha})")
+        print(f"Running diagnostic analyses (alpha={args.alpha})")
         print("="*60)
 
-        gamma_beta_result = test_gamma_beta(A, alpha=args.alpha, gamma_max=args.gamma_max, beta_max=args.beta_max)
-        p_result         = test_depth(A, alpha=args.alpha, n_restarts=args.n_restarts, gamma_max=args.gamma_max, beta_max=args.beta_max)
-        save_test_results(f'{args.test_results}', gamma_beta_result, p_result)
+        gamma_beta_result = analyse_gamma_beta(A, alpha=args.alpha, gamma_max=args.gamma_max, beta_max=args.beta_max)
+        p_result         = analyse_depth(A, alpha=args.alpha, n_restarts=args.n_restarts, gamma_max=args.gamma_max, beta_max=args.beta_max)
+        save_analyse_results(f'{args.analyse_results}', gamma_beta_result, p_result)
 
         print("\n  Gamma/Beta best result:")
 

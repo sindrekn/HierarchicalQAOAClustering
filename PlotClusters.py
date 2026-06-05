@@ -1,16 +1,11 @@
 import h5py
 import json
+import argparse
 import numpy as np
 import pandas as pd
 import networkx as nx
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
-
-graph_name = "SmallKarateClub"
-
-result_analyse_path = f"/home/sindrekampennesheim/Documents/PhD/FYS5419/Project_ClusteringQAOA/results/{graph_name}-analyse.h5"
-result_hierarchical_path = f"/home/sindrekampennesheim/Documents/PhD/FYS5419/Project_ClusteringQAOA/results/{graph_name}-Hierarchical.h5"
-graph_path = f"graphs/{graph_name}.csv"
 
 # =============================================================================
 # Create the graph from the CSV file
@@ -19,20 +14,31 @@ def add_edges(graph: nx.Graph, edges: list, weights: list):
     for edge, weight in zip(edges, weights):
         graph.add_edge(edge[0], edge[1], weight=weight)
 
-network_graph = nx.Graph()
-graph = pd.read_csv(graph_path)
-edges   = [(row['Node1'], row['Node2']) for _, row in graph.iterrows()]
-weights = [row['Weight'] for _, row in graph.iterrows()]
+def construct_graph_from_csv(graph_path: str) -> np.ndarray:
+    network_graph = nx.Graph()
+    graph = pd.read_csv(graph_path)
+    edges   = [(row['Node1'], row['Node2']) for _, row in graph.iterrows()]
+    weights = [row['Weight'] for _, row in graph.iterrows()]
 
-add_edges(network_graph, edges, weights)
+    add_edges(network_graph, edges, weights)
 
-nodelist = sorted(network_graph.nodes())
-A = np.array(nx.adjacency_matrix(network_graph, nodelist=nodelist, weight='weight').todense())
+    nodelist = sorted(network_graph.nodes())
+    A = np.array(nx.adjacency_matrix(network_graph, nodelist=nodelist, weight='weight').todense())
+    return A, network_graph
 
 # =============================================================================
 # Loading Results
 # =============================================================================
 def load_hierarchical_result(filename: str) -> dict:
+    """
+    Loads the hierarchical clustering result from an .h5 file and returns a dictionary containing
+    the given labels. 
+
+    LLM assisted
+    ------------
+    Tool: Claude (2026)
+    Created by Claude, tested by me. 
+    """
     with h5py.File(filename, 'r') as f:
         best_labels     = f['best_labels'][:]
         best_modularity = float(f['best_modularity'][()])
@@ -46,6 +52,15 @@ def load_hierarchical_result(filename: str) -> dict:
     }
 
 def load_analyse_results(filename: str) -> tuple:
+    """
+    Loads the QAOA analysis results from an .h5 file and returns two dictionaries: 
+    one for the gamma-beta sweep results and one for the p-sweep results.
+
+    LLM assisted
+    ------------
+    Tool: Claude (2026)
+    Created by Claude, tested by me. 
+    """
     gamm_beta_result = {'gammas': [], 'betas': [], 'expected_values': [], 'state_probs': []}
     p_result = {'p': [], 'gamma_opt': [], 'beta_opt': [], 'state probabilities': [], 'expected values': []}
 
@@ -73,8 +88,15 @@ def load_analyse_results(filename: str) -> tuple:
 
     return gamm_beta_result, p_result
 
-def plot_optimal_configurations(result_path: str, graph_name: str):    
-    """Plot the optimal clustering configuration from the hierarchical clustering result."""
+def plot_optimal_configurations(result_path: str, graph_name: str, A: np.ndarray, network_graph: nx.Graph):    
+    """
+    Plot the optimal clustering configuration from the hierarchical clustering result.
+
+    LLM assisted
+    ------------
+    Tool: Claude (2026)
+    Created by Claude, tested by me.
+    """
     res = load_hierarchical_result(result_path)
     
     # Plot the resulting partition
@@ -104,6 +126,11 @@ def plot_probability_distribution_at_diff_p(
     The Z_2 symmetry means the optimal partition always appears as two
     degenerate bitstrings (complements of each other) — their combined
     probability is shown in the title.
+
+    LLM assisted
+    ------------
+    Tool: Claude (2026)
+    Created by Claude, tested by me.
     """
     p_vals   = p_result['p']
     p_num    = len(p_vals)
@@ -174,7 +201,14 @@ def plot_probability_distribution_at_diff_p(
     plt.show()
 
 def plot_gamma_beta_heatmaps(gamm_beta_result: dict):
-    """Plot heatmaps of expected values over the gamma-beta grid."""
+    """
+    Plot heatmaps of expected values over the gamma-beta grid.
+    
+    LLM assisted
+    ------------
+    Tool: Claude (2026)
+    Created by Claude, tested by me.
+    """
     gammas = np.array(gamm_beta_result['gamma'])
     betas  = np.array(gamm_beta_result['beta'])
 
@@ -196,11 +230,53 @@ def plot_gamma_beta_heatmaps(gamm_beta_result: dict):
     # ax.set_title(r'Expected value $\langle H_C \rangle$ over $(\gamma, \beta)$ grid')
     fig.colorbar(im, ax=ax, label=r'$\langle H_C \rangle$')
     plt.tight_layout()
-    # plt.savefig(f"/home/sindrekampennesheim/Documents/PhD/FYS5419/Project_ClusteringQAOA/Plots/GammaBetaHeatPlots/Gamma_beta_{graph_name}.pdf", bbox_inches='tight')
+    plt.savefig(f"/home/sindrekampennesheim/Documents/PhD/FYS5419/Project_ClusteringQAOA/Plots/GammaBetaHeatPlots/Gamma_beta_{graph_name}_bigRange.pdf", bbox_inches='tight')
     plt.show()
 
-# plot_gamma_beta_heatmaps(load_analyse_results(result_analyse_path)[0])
-# plot_optimal_configurations(result_hierarchical_path, graph_name)
-plot_probability_distribution_at_diff_p(load_analyse_results(result_analyse_path)[1], top_n=10)
 
+def parse_args(): 
+    """Parse command-line arguments for plotting."""
+    parser = argparse.ArgumentParser(description="Plot QAOA clustering results.")
+
+    # --- Mode selection ---
+    parser.add_argument('--heatmap', action='store_true', help='Plot gamma-beta heatmaps.')
+    parser.add_argument('--optimal-config', action='store_true', help='Plot optimal clustering configuration.')
+    parser.add_argument('--prob-dist', action='store_true', help='Plot probability distribution at different p values.')
+
+    # --- Common arguments ---
+    parser.add_argument('--save_path', type=str, help='Path to save the generated plot.')
+
+    # --- Specific arguments ---
+    parser.add_argument('--analyse_path', type=str, help='Path to the analyse results HDF5 file (required for heatmap and probability distribution).')
+    parser.add_argument('--hierarchical_path', type=str, help='Path to the hierarchical results HDF5 file (required for optimal configuration plot).')
+    parser.add_argument('--graph_path', type=str, help='Path to the graph CSV file (required for optimal configuration plot).')
+    return parser.parse_args()
+
+def main():
+    """Main function to execute the desired plotting based on command-line arguments."""
+    args = parse_args()
+
+    if args.heatmap:
+        if not args.analyse_path:
+            print("Error: --analyse_path is required for heatmap plotting.")
+            return
+        gamm_beta_result, _ = load_analyse_results(args.analyse_path)
+        plot_gamma_beta_heatmaps(gamm_beta_result)
+
+    if args.optimal_config:
+        if not args.hierarchical_path:
+            print("Error: --hierarchical_path is required for optimal configuration plotting.")
+            return
+        A, network_graph = construct_graph_from_csv(args.graph_path)
+        plot_optimal_configurations(args.hierarchical_path, graph_name, A, network_graph)
+
+    if args.prob_dist:
+        if not args.analyse_path:
+            print("Error: --analyse_path is required for probability distribution plotting.")
+            return
+        _, p_result = load_analyse_results(args.analyse_path)
+        plot_probability_distribution_at_diff_p(p_result, top_n=10)
+
+if __name__ == "__main__":
+    main()
 

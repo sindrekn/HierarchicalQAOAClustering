@@ -14,6 +14,10 @@ from qiskit_ibm_runtime import QiskitRuntimeService
 from qiskit_ibm_runtime import Session, EstimatorV2 as Estimator
 from qiskit_ibm_runtime import SamplerV2 as Sampler
 
+"""
+Unfinished implementation of the IBM quantum hardware
+"""
+
 # =============================================================================
 # Graph Construction
 # =============================================================================

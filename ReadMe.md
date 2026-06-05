@@ -81,3 +81,22 @@ python HierarchicalClusteringQAOA_ClassicalSimulation.py \
     --graphfile "graphs/XXSgraph.csv" \
     --hierarchical_result "results/XXSgraph-Hierarchical.h5" \
     --analyse_results "results/XXSgraph-analyse.h5"
+
+### Step 2: Plot the Bisection Tree Structure
+Generate a structured tree path configuration map from your hierarchical matrix file:
+```bash
+python TreeStructurePlot.py \
+    --result_path "results/XXSgraph-Hierarchical.h5" \
+    --save_path "results/tree_plot_smallkarateclub.pdf"
+
+### Step 3: Visualize Results (Heatmaps, Probabilities, and Partitions)
+Generate plots visualizing the entire output matrix, state parameter landscape spaces, and cluster profiles concurrently:
+```bash
+python PlotClusters.py \
+    --heatmap \
+    --optimal-config \
+    --prob-dist \
+    --save_path "results/plot.pdf" \
+    --analyse_path results/XXSgraph-analyse.h5 \
+    --hierarchical_path results/XXSgraph-Hierarchical.h5 \
+    --graph_path "graphs/XXSgraph.csv"

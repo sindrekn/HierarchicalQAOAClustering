@@ -101,3 +101,11 @@ python PlotClusters.py \
     --hierarchical_path results/XXSgraph-Hierarchical.h5 \
     --graph_path "graphs/XXSgraph.csv"
 ```
+
+## Python Packages
+
+The following Python packages are required to run the scripts. You can install them via `pip`:
+
+```bash
+pip install h5py orjson numpy pandas networkx numba scipy matplotlib
+```

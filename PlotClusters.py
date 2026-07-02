@@ -88,7 +88,7 @@ def load_analyse_results(filename: str) -> tuple:
 
     return gamm_beta_result, p_result
 
-def plot_optimal_configurations(result_path: str, graph_name: str, A: np.ndarray, network_graph: nx.Graph):    
+def plot_optimal_configurations(result_path: str, A: np.ndarray, network_graph: nx.Graph, save_plot: bool = True, save_path: str = "Graph_solution.pdf"):       
     """
     Plot the optimal clustering configuration from the hierarchical clustering result.
 
@@ -112,12 +112,15 @@ def plot_optimal_configurations(result_path: str, graph_name: str, A: np.ndarray
     nx.draw_networkx(G, with_labels=True, node_color=colors, node_size=500)
     # plt.title(f"Hierarchical QAOA Clustering (Q={res['best_modularity']:.4f}, k={res['n_clusters']})")
     plt.axis('off')
-    plt.savefig(f"/home/sindrekampennesheim/Documents/PhD/FYS5419/Project_ClusteringQAOA/Plots/OptimalConfigurations/{graph_name}_OptimalConfig.pdf", bbox_inches='tight')
+    if save_plot:
+        plt.savefig(save_path, bbox_inches='tight')
     plt.show()
 
 def plot_probability_distribution_at_diff_p(
     p_result: dict,
     top_n: int = 10,
+    save_depth_plot: bool = False,
+    save_path: str = "depth_probability_distribution.pdf"
 ):
     """
     Plot the probability distribution of the top_n most probable basis states
@@ -197,10 +200,12 @@ def plot_probability_distribution_at_diff_p(
     bottom=0.08,  # Space on the bottom edge of the figure
     wspace=0.3,  # Width spacing BETWEEN the subplot boxes
     hspace=0.3   # Height spacing BETWEEN the subplot boxes (great for rotated labels)
-)
+    )
+    if save_depth_plot:
+        plt.savefig(save_path, bbox_inches='tight')
     plt.show()
 
-def plot_gamma_beta_heatmaps(gamm_beta_result: dict):
+def plot_gamma_beta_heatmaps(gamm_beta_result: dict, save_heatmap: bool = True, save_path: str = "gamma_beta_heatmap.pdf"):
     """
     Plot heatmaps of expected values over the gamma-beta grid.
     
@@ -230,7 +235,8 @@ def plot_gamma_beta_heatmaps(gamm_beta_result: dict):
     # ax.set_title(r'Expected value $\langle H_C \rangle$ over $(\gamma, \beta)$ grid')
     fig.colorbar(im, ax=ax, label=r'$\langle H_C \rangle$')
     plt.tight_layout()
-    plt.savefig(f"/home/sindrekampennesheim/Documents/PhD/FYS5419/Project_ClusteringQAOA/Plots/GammaBetaHeatPlots/Gamma_beta_{graph_name}_bigRange.pdf", bbox_inches='tight')
+    if save_heatmap:
+        plt.savefig(save_path, bbox_inches='tight')
     plt.show()
 
 
@@ -243,10 +249,17 @@ def parse_args():
     parser.add_argument('--optimal-config', action='store_true', help='Plot optimal clustering configuration.')
     parser.add_argument('--prob-dist', action='store_true', help='Plot probability distribution at different p values.')
 
-    # --- Common arguments ---
-    parser.add_argument('--save_path', type=str, help='Path to save the generated plot.')
-
     # --- Specific arguments ---
+    parser.add_argument('--save_heatmap', action='store_true', help='Whether to save the heatmap plot.')
+    parser.add_argument('--save_path_heatmap', type=str, help='Path to save the heatmap plot.')
+
+    parser.add_argument('--save_depth_plot', action='store_true', help='Whether to save the probability distribution plot for different p values.')
+    parser.add_argument('--save_path_depth_plot', type=str, help='Path to save the probability distribution plot for different p values.')
+    parser.add_argument('--top_n', type=int, default=10, help='Number of top states to show in the probability distribution plot.')
+
+    parser.add_argument('--save_optimal_config', action='store_true', help='Whether to save the optimal configuration plot.')
+    parser.add_argument('--save_path_optimal_config', type=str, help='Path to save the optimal configuration plot.')
+
     parser.add_argument('--analyse_path', type=str, help='Path to the analyse results HDF5 file (required for heatmap and probability distribution).')
     parser.add_argument('--hierarchical_path', type=str, help='Path to the hierarchical results HDF5 file (required for optimal configuration plot).')
     parser.add_argument('--graph_path', type=str, help='Path to the graph CSV file (required for optimal configuration plot).')
@@ -261,21 +274,21 @@ def main():
             print("Error: --analyse_path is required for heatmap plotting.")
             return
         gamm_beta_result, _ = load_analyse_results(args.analyse_path)
-        plot_gamma_beta_heatmaps(gamm_beta_result)
+        plot_gamma_beta_heatmaps(gamm_beta_result, save_heatmap=args.save_heatmap, save_path=args.save_path_heatmap)
 
     if args.optimal_config:
         if not args.hierarchical_path:
             print("Error: --hierarchical_path is required for optimal configuration plotting.")
             return
         A, network_graph = construct_graph_from_csv(args.graph_path)
-        plot_optimal_configurations(args.hierarchical_path, graph_name, A, network_graph)
+        plot_optimal_configurations(args.hierarchical_path, A, network_graph, save_plot=args.save_optimal_config, save_path=args.save_path_optimal_config)
 
     if args.prob_dist:
         if not args.analyse_path:
             print("Error: --analyse_path is required for probability distribution plotting.")
             return
         _, p_result = load_analyse_results(args.analyse_path)
-        plot_probability_distribution_at_diff_p(p_result, top_n=10)
+        plot_probability_distribution_at_diff_p(p_result, top_n=args.top_n, save_depth_plot=args.save_depth_plot, save_path=args.save_path_depth_plot)
 
 if __name__ == "__main__":
     main()
